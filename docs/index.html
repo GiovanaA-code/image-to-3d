@@ -139,7 +139,7 @@
 </div>
 
 <script src="clipper.js?v=a650c69466"></script>
-<script src="core.js?v=9e68231ea0"></script>
+<script src="core.js?v=9d6f6f505b"></script>
 <script>
 (function () {
   'use strict';
@@ -286,10 +286,12 @@
     const b = e.target.closest('button');
     if (!b) return;
     for (const x of $('fit').children) x.setAttribute('aria-pressed', String(x === b));
+    $('specs').innerHTML = '';
     preview();
   });
   let pending = 0;
   $('size').addEventListener('input', () => {
+    $('specs').innerHTML = '';       // they describe the last download, not this size
     clearTimeout(pending);
     pending = setTimeout(preview, 250);
   });
