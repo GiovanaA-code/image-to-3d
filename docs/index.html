@@ -176,48 +176,72 @@
     img.src = url;
   }
 
-  // ---- silhouette preview --------------------------------------------------
+  // ---- outline preview -----------------------------------------------------
+  // Shows the shape that will actually be cut, after specks are dropped and the
+  // outline is rounded - not the raw mask, which still carries every stray mark
+  // and would promise something the STL does not deliver.
   function preview() {
     if (!pixels) return;
-    let sil;
+    let shape;
     try {
-      sil = CutterCore.silhouetteMask(pixels.data, pixels.w, pixels.h, {});
+      const sil = CutterCore.silhouetteMask(pixels.data, pixels.w, pixels.h, {});
+      if (sil.coverage < 0.005)
+        return show('Não encontrei nenhuma figura. O traço pode estar muito claro.', 'err');
+      if (sil.coverage > 0.97)
+        return show('O contorno do desenho não está fechado, então o preenchimento vazou.', 'err');
+      const loops = CutterCore.traceMask(sil.mask, sil.w, sil.h);
+      shape = CutterCore.buildShape(loops, sizeOpt()).shape;
     } catch (e) { return show(e.message, 'err'); }
 
-    const c = $('sil');
-    c.width = sil.w; c.height = sil.h;
-    const ctx = c.getContext('2d');
-    const out = ctx.createImageData(sil.w, sil.h);
-    for (let p = 0; p < sil.w * sil.h; p++) {
-      const v = sil.mask[p] ? 0 : 255, i = p * 4;
-      out.data[i] = out.data[i + 1] = out.data[i + 2] = v;
-      out.data[i + 3] = 255;
+    const rings = shape.map(r => r.map(p => [p.X / 1000, p.Y / 1000]));
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const r of rings) for (const p of r) {
+      if (p[0] < x0) x0 = p[0];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[1] > y1) y1 = p[1];
     }
-    ctx.putImageData(out, 0, 0);
-
-    if (sil.coverage < 0.005) show('Não encontrei nenhuma figura. O traço pode estar muito claro.', 'err');
-    else if (sil.coverage > 0.97) show('O contorno do desenho não está fechado, então o preenchimento vazou.', 'err');
-    else show('', '');
+    const W = 600, pad = 12;
+    const k = (W - pad * 2) / (x1 - x0);
+    const H = Math.round((y1 - y0) * k) + pad * 2;
+    const c = $('sil');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, H);
+    ctx.beginPath();
+    for (const r of rings) {
+      r.forEach((p, i) => {
+        const x = (p[0] - x0) * k + pad, y = H - pad - (p[1] - y0) * k;   // y up
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+    }
+    ctx.fillStyle = '#2b2622';
+    ctx.fill('evenodd');
+    show('', '');
   }
 
   // ---- generate ------------------------------------------------------------
-  function fitMode() {
-    return document.querySelector('#fit button[aria-pressed="true"]').dataset.fit;
+  /** Which dimension the millimetre value refers to. */
+  function sizeOpt() {
+    const fit = document.querySelector('#fit button[aria-pressed="true"]').dataset.fit;
+    const mm = parseFloat($('size').value);
+    const opt = { tall: 0, wide: 0, size: 0 };
+    opt[fit] = mm > 0 ? mm : 70;
+    return opt;
   }
 
   function generate() {
     if (!pixels) return;
-    const mm = parseFloat($('size').value);
-    if (!(mm > 0)) return show('Informe um tamanho em milímetros.', 'err');
+    if (!(parseFloat($('size').value) > 0)) return show('Informe um tamanho em milímetros.', 'err');
 
     show('Gerando...', 'busy');
     $('go').disabled = true;
     // Yield once so the browser paints the busy state before the work starts.
     setTimeout(() => {
       try {
-        const opt = { tall: 0, wide: 0, size: 0 };
-        opt[fitMode()] = mm;
-        const r = CutterCore.generate(pixels.data, pixels.w, pixels.h, opt);
+        const r = CutterCore.generate(pixels.data, pixels.w, pixels.h, sizeOpt());
 
         const blob = new Blob([r.stl], { type: 'model/stl' });
         const a = document.createElement('a');
@@ -256,10 +280,18 @@
   }));
   drop.addEventListener('drop', e => load(e.dataTransfer.files[0]));
 
+  // The rounding works in millimetres, so the outline genuinely changes with the
+  // size. Redraw the preview whenever either input moves.
   $('fit').addEventListener('click', e => {
     const b = e.target.closest('button');
     if (!b) return;
     for (const x of $('fit').children) x.setAttribute('aria-pressed', String(x === b));
+    preview();
+  });
+  let pending = 0;
+  $('size').addEventListener('input', () => {
+    clearTimeout(pending);
+    pending = setTimeout(preview, 250);
   });
   $('go').addEventListener('click', generate);
 })();
