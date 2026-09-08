@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-/* Local preview of web/ - what GitHub Pages will serve. */
+/* Local preview of docs/ - what GitHub Pages will serve. */
 const http = require('http'), fs = require('fs'), path = require('path');
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript' };
-const root = path.join(__dirname, 'web');
+const root = path.join(__dirname, 'docs');
 http.createServer((req, res) => {
   const file = path.join(root, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
   fs.readFile(file, (err, data) => {

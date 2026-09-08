@@ -45,6 +45,6 @@ node cli.js art.jpg --tall 70 -o cutter.stl
 
 `lib/core.js` holds the entire pipeline and has no I/O and no Node APIs, so the
 CLI and the web page run identical geometry. `npm run build` copies it into
-`web/`; run it before committing a change to the core.
+`docs/`; run it before committing a change to the core.
 
-The published page is the contents of `web/`. Pushing to `main` updates it.
+The published page is the contents of `docs/`. Pushing to `main` updates it.
