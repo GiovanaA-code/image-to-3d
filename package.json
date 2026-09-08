@@ -1,0 +1,21 @@
+{
+  "name": "cookie-cutter-generator",
+  "version": "1.0.0",
+  "description": "Turn line art into a printable cookie cutter STL, in the browser",
+  "main": "lib/core.js",
+  "scripts": {
+    "build": "node build.js",
+    "serve": "node build.js && node serve.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "clipper-lib": "^6.4.2",
+    "earcut": "^3.2.3",
+    "jimp": "^1.6.1",
+    "potrace": "^2.1.8",
+    "svgpath": "^2.6.0"
+  }
+}
