@@ -56,17 +56,21 @@ function autoCrop(rgba, w, h, tol) {
   tol = tol == null ? 32 : tol;
   let x0 = 0, y0 = 0, x1 = w - 1, y1 = h - 1;
   const at = (x, y) => { const i = (y * w + x) * 4; return [rgba[i], rgba[i + 1], rgba[i + 2]]; };
-  // A line counts as border if nearly all of it matches its own first pixel.
+  // A line counts as border only if it is entirely one colour, bar a couple of
+  // pixels of compression noise. Anything looser eats the artwork: a row
+  // holding just the tip of a star is 99% background, so a 95% rule would trim
+  // it away and leave the star cut off flat.
   const uniform = (fixed, from, to, horizontal) => {
     const ref = horizontal ? at(from, fixed) : at(fixed, from);
-    let same = 0, n = 0;
+    const n = to - from + 1;
+    let odd = 0;
+    const allowed = Math.max(1, Math.floor(n * 0.001));
     for (let v = from; v <= to; v++) {
       const p = horizontal ? at(v, fixed) : at(fixed, v);
-      if (Math.abs(p[0] - ref[0]) <= tol && Math.abs(p[1] - ref[1]) <= tol &&
-          Math.abs(p[2] - ref[2]) <= tol) same++;
-      n++;
+      if (Math.abs(p[0] - ref[0]) > tol || Math.abs(p[1] - ref[1]) > tol ||
+          Math.abs(p[2] - ref[2]) > tol) { if (++odd > allowed) return false; }
     }
-    return same / n >= 0.95;
+    return true;
   };
   // Never eat more than a third of a side: that would be cropping the artwork.
   const limX = Math.floor(w / 3), limY = Math.floor(h / 3);
