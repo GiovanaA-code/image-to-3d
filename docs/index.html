@@ -63,6 +63,19 @@
   }
   input[type=number]:focus, input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .unit { color: var(--muted); font-size: 14px; white-space: nowrap; }
+  .hint { margin: -10px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+  /* Loading the model takes a minute on a cold cache. Say so loudly and keep
+     counting, or it reads as the page having frozen. */
+  #ai { margin: -6px 0 16px; padding: 11px 12px; border-radius: 8px; background: var(--accent-soft); }
+  #ai p { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--accent); }
+  .bar { height: 5px; border-radius: 3px; background: rgba(194,65,12,.18); overflow: hidden; }
+  .bar span {
+    display: block; height: 100%; width: 0; border-radius: 3px; background: var(--accent);
+    transition: width .2s;
+  }
+  .bar.wait span { width: 35%; animation: slide 1.1s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
   #two { display: none; }
   .free #one { display: none; }
   .free #two { display: block; }
@@ -125,6 +138,17 @@
         <span class="unit">.stl</span>
       </div>
 
+      <label>Detecção do contorno</label>
+      <div class="seg" id="mode">
+        <button type="button" data-mode="fast" aria-pressed="true">Rápida</button>
+        <button type="button" data-mode="ai" aria-pressed="false">IA</button>
+      </div>
+      <p class="hint" id="modehint">Contraste e preenchimento. Ideal para desenho de traço.</p>
+      <div id="ai" hidden>
+        <div class="bar"><span id="aibar"></span></div>
+        <p id="aitext">Preparando...</p>
+      </div>
+
       <label for="size">Tamanho do biscoito</label>
       <div class="seg" id="fit">
         <button type="button" data-fit="tall" aria-pressed="true">Altura</button>
@@ -153,19 +177,144 @@
   </div>
 
   <footer>
-    <p>Tudo roda no seu navegador. Nenhuma imagem é enviada para a internet.</p>
+    <p>Tudo roda no seu navegador. Nenhuma imagem é enviada para a internet, nem no modo IA:
+       o que ele baixa é o modelo, e o recorte acontece aqui.</p>
     <p>Imprima com a aba apoiada na mesa e a lâmina para cima, sem suporte.</p>
   </footer>
 </div>
 
 <script src="clipper.js?v=a650c69466"></script>
-<script src="core.js?v=37ef487dfc"></script>
+<script src="core.js?v=fa79a6b525"></script>
 <script>
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
   const MAX_SIDE = 1400;          // bigger scans only cost time; the nozzle cannot use the detail
-  let pixels = null;
+  const AI_WORKER = 'ai-worker.js?v=6902054364';
+  let pixels = null, srcUrl = null;
+
+  // ---- AI cut-out ----------------------------------------------------------
+  // The built-in fill reads line art perfectly and a photograph badly: a white
+  // beard on white paper has no threshold that separates it. A segmentation
+  // model has no such trouble, so it is offered as a second route to the same
+  // mask - everything downstream, outline and rounding and mesh, is shared.
+  //
+  // BiRefNet-lite: MIT licensed, 110 MB, fetched from the CDN on first use and
+  // then cached by the browser. It runs here, on this machine: the picture is
+  // never uploaded anywhere.
+  const AI = {
+    worker: null,     // holds the loaded model between images
+    plan: null,       // which model on which backend, decided once
+    mask: null,       // the cut-out of the image currently loaded
+  };
+
+  /*
+   * Which model can this machine actually run?
+   *
+   * BiRefNet-lite gives the best cut by a wide margin, and plenty of machines
+   * cannot run it at all: it wants 17 storage buffers in one shader where the
+   * common WebGPU limit is 16, and on the CPU it runs out of WASM memory. The
+   * driver states its limit up front, so ask rather than fail on the user.
+   *
+   * ORMBG is the fallback: a quarter of the size, runs on both backends, and
+   * cuts a little less finely - it can clip the drooping tip of a hat.
+   */
+  async function aiPlan() {
+    if (AI.plan) return AI.plan;
+    let limit = 0;
+    if (navigator.gpu) {
+      try {
+        const a = await navigator.gpu.requestAdapter();
+        limit = a ? a.limits.maxStorageBuffersPerShaderStage : 0;
+      } catch (e) { limit = 0; }
+    }
+    if (limit >= 17)
+      AI.plan = { model: 'onnx-community/BiRefNet_lite-ONNX', dtype: 'fp16', device: 'webgpu',
+                  mb: 110, slow: false };
+    else if (limit > 0)
+      AI.plan = { model: 'onnx-community/ormbg-ONNX', dtype: 'fp16', device: 'webgpu',
+                  mb: 84, slow: false };
+    else
+      AI.plan = { model: 'onnx-community/ormbg-ONNX', dtype: 'q8', device: 'wasm',
+                  mb: 42, slow: true };
+    return AI.plan;
+  }
+
+  /** The banner under the mode switch. pct < 0 means "no idea how long". */
+  function aiSay(text, pct) {
+    $('ai').hidden = !text;
+    if (!text) return;
+    $('aitext').textContent = text;
+    $('aibar').parentNode.classList.toggle('wait', !(pct >= 0));
+    $('aibar').style.width = pct >= 0 ? pct + '%' : '';
+  }
+
+  /** Ask the worker to cut out srcUrl. Resolves with its one-byte-per-pixel mask. */
+  function aiRun(plan) {
+    return new Promise((resolve, reject) => {
+      if (!AI.worker) AI.worker = new Worker(AI_WORKER, { type: 'module' });
+      const files = {};
+      AI.worker.onmessage = e => {
+        const m = e.data;
+        if (m.type === 'progress') {
+          files[m.file] = m;
+          let done = 0, total = 0;
+          for (const k in files) { done += files[k].loaded; total += files[k].total; }
+          return aiSay('Baixando o modelo de IA, ' + plan.mb + ' MB. Isso só acontece na primeira '
+                       + 'vez, depois fica salvo no navegador.', Math.round(done / total * 100));
+        }
+        if (m.type === 'error') return reject(new Error(m.message));
+        if (m.type === 'mask') {
+          aiSay('Recortando a figura' + (plan.slow ? ', pode levar até um minuto' : '') + '...', -1);
+          resolve(m);
+        }
+      };
+      AI.worker.onerror = ev => reject(new Error(ev.message || 'o modelo de IA não carregou'));
+      aiSay('Preparando o modelo de IA...', -1);
+      AI.worker.postMessage({ url: srcUrl, model: plan.model, dtype: plan.dtype, device: plan.device });
+    });
+  }
+
+  async function aiMask() {
+    if (AI.mask) return AI.mask;
+    const plan = await aiPlan();
+    const r = await aiRun(plan);
+    // A border of background, so a figure running to the very edge of the frame
+    // still traces as a closed loop.
+    const pad = 2, W = r.w + pad * 2, H = r.h + pad * 2;
+    const mask = new Uint8Array(W * H);
+    let filled = 0;
+    for (let y = 0; y < r.h; y++)
+      for (let x = 0; x < r.w; x++)
+        if (r.mask[y * r.w + x]) { mask[(y + pad) * W + x + pad] = 1; filled++; }
+    if (filled < W * H * 0.002) throw new Error('A IA não encontrou nenhuma figura nessa imagem.');
+    AI.mask = { mask: mask, w: W, h: H };
+    aiSay('', 0);
+    return AI.mask;
+  }
+
+  function aiOn() {
+    return document.querySelector('#mode button[aria-pressed="true"]').dataset.mode === 'ai';
+  }
+
+  /** Whatever went wrong, the banner has to come down with it. */
+  function aiFailed(e) {
+    aiSay('', 0);
+    const raw = String(e && e.message || e);
+    // ORT reports a driver limit as a wall of C++ symbols. Nobody choosing a
+    // cookie shape needs to read that.
+    if (/ORT|Ort|storage buffers|shader|WebGPU|webgpu/.test(raw))
+      return 'A IA não conseguiu rodar neste navegador. Use o modo Rápida.';
+    if (/fetch|network|Failed to load|Load model/i.test(raw))
+      return 'Não consegui baixar o modelo de IA. Verifique a internet e tente de novo.';
+    return raw;
+  }
+
+  /** Lock the controls that must not move while the model is working. */
+  function aiBusy(on) {
+    for (const b of $('mode').children) b.disabled = on;
+    $('go').disabled = on;
+  }
 
   // ---- loading -------------------------------------------------------------
   function show(text, kind) {
@@ -179,7 +328,9 @@
     // Prefill the download name from the drop, but leave it editable: a photo
     // straight out of WhatsApp carries a name nobody wants on their STL.
     $('name').value = file.name.replace(/\.[^.]+$/, '').slice(0, 60) || 'cortador';
-    const url = URL.createObjectURL(file);
+    if (srcUrl) URL.revokeObjectURL(srcUrl);
+    AI.mask = null;                  // belongs to the old picture
+    const url = srcUrl = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       const k = Math.min(1, MAX_SIDE / Math.max(img.width, img.height));
@@ -202,16 +353,31 @@
   // Shows the shape that will actually be cut, after specks are dropped and the
   // outline is rounded - not the raw mask, which still carries every stray mark
   // and would promise something the STL does not deliver.
-  function preview() {
+  async function preview() {
     if (!pixels) return;
     let shape;
     try {
-      const sil = CutterCore.silhouetteMask(pixels.data, pixels.w, pixels.h, {});
-      if (sil.coverage < 0.005)
-        return show('Não encontrei nenhuma figura. O traço pode estar muito claro.', 'err');
-      if (sil.coverage > 0.97)
-        return show('O contorno do desenho não está fechado, então o preenchimento vazou.', 'err');
-      const loops = CutterCore.traceMask(sil.mask, sil.w, sil.h);
+      let m;
+      if (aiOn()) {
+        aiBusy(true);
+        try { m = await aiMask(); } catch (e) { return show(aiFailed(e), 'err'); }
+        finally { aiBusy(false); }
+      } else {
+        const sil = CutterCore.silhouetteMask(pixels.data, pixels.w, pixels.h, {});
+        if (sil.coverage < 0.005)
+          return show('Não encontrei nenhuma figura. O traço pode estar muito claro.', 'err');
+        if (sil.coverage > 0.97)
+          return show('O contorno do desenho não está fechado, então o preenchimento vazou.', 'err');
+        m = { mask: sil.mask, w: sil.w, h: sil.h };
+      }
+      // Tracing a megapixel mask and rounding the result takes seconds of its
+      // own, on this thread. Say so first, and give the browser a frame to
+      // paint it in, or that wait reads as more of the model's.
+      if (aiOn()) {
+        show('Desenhando o contorno...', 'busy');
+        await new Promise(r => setTimeout(r, 30));
+      }
+      const loops = CutterCore.traceMask(m.mask, m.w, m.h);
       shape = CutterCore.buildShape(loops, sizeOpt()).shape;
     } catch (e) { return show(e.message, 'err'); }
 
@@ -255,9 +421,14 @@
   /** Which dimension(s) the entered size refers to. 'free' drives both axes. */
   function sizeOpt() {
     const fit = fitMode();
-    if (fit === 'free') return { tall: mm('tall') || 70, wide: mm('wide') || 70, size: 0 };
-    const opt = { tall: 0, wide: 0, size: 0 };
-    opt[fit] = mm('size') > 0 ? mm('size') : 70;
+    const opt = fit === 'free' ? { tall: mm('tall') || 70, wide: mm('wide') || 70, size: 0 }
+                               : { tall: 0, wide: 0, size: 0 };
+    if (fit !== 'free') opt[fit] = mm('size') > 0 ? mm('size') : 70;
+    // The default rounding is set for the fill, whose edge carries the pixel
+    // staircase and whatever the compression left behind. The model's edge is
+    // already clean, and that much smoothing there costs real detail: the
+    // drooping tip of a hat, the gap between two boots.
+    if (aiOn()) opt.round = 0.5;
     return opt;
   }
 
@@ -266,17 +437,26 @@
     return fitMode() === 'free' ? [$('tall'), $('wide')] : [$('size')];
   }
 
-  function generate() {
+  async function generate() {
     if (!pixels) return;
     if (!sizeInputs().every(i => parseFloat(i.value) > 0))
       return show('Informe um tamanho em centímetros.', 'err');
 
-    show('Gerando...', 'busy');
-    $('go').disabled = true;
-    // Yield once so the browser paints the busy state before the work starts.
-    setTimeout(() => {
-      try {
-        const r = CutterCore.generate(pixels.data, pixels.w, pixels.h, sizeOpt());
+    aiBusy(true);
+    try {
+      // Ahead of the busy state, because it puts up messages of its own and
+      // may have a model to fetch first.
+      let m = null;
+      if (aiOn()) {
+        try { m = await aiMask(); }
+        catch (e) { show(aiFailed(e), 'err'); aiBusy(false); return; }
+      }
+      show('Gerando...', 'busy');
+      // Yield once so the browser paints the busy state before the work starts.
+      await new Promise(r => setTimeout(r, 30));
+      {
+        const r = m ? CutterCore.generateFromMask(m.mask, m.w, m.h, sizeOpt())
+                    : CutterCore.generate(pixels.data, pixels.w, pixels.h, sizeOpt());
 
         const blob = new Blob([r.stl], { type: 'model/stl' });
         const a = document.createElement('a');
@@ -298,11 +478,11 @@
           ['Malha', r.triangles.toLocaleString('pt-BR') + ' triângulos'],
         ].map(r => '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>').join('');
         show('', '');
-      } catch (e) {
-        show(e.message, 'err');
       }
-      $('go').disabled = false;
-    }, 30);
+    } catch (e) {
+      show(e.message, 'err');
+    }
+    aiBusy(false);
   }
 
   // ---- wiring --------------------------------------------------------------
@@ -316,6 +496,21 @@
     e.preventDefault(); drop.classList.remove('over');
   }));
   drop.addEventListener('drop', e => load(e.dataTransfer.files[0]));
+
+  const HINTS = {
+    fast: 'Contraste e preenchimento. Ideal para desenho de traço.',
+    ai: 'Recorta a figura com um modelo de visão. Melhor para foto e desenho colorido. ' +
+        'Baixa o modelo na primeira vez, de 42 a 110 MB conforme o seu computador. ' +
+        'A imagem não sai daqui.',
+  };
+  $('mode').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    for (const x of $('mode').children) x.setAttribute('aria-pressed', String(x === b));
+    $('modehint').textContent = HINTS[b.dataset.mode];
+    $('specs').innerHTML = '';
+    preview();
+  });
 
   // The rounding works in millimetres, so the outline genuinely changes with the
   // size. Redraw the preview whenever either input moves.

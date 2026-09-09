@@ -34,5 +34,16 @@ for (const [name, hash] of Object.entries(stamp)) {
   if (!re.test(html)) throw new Error(`no <script src="${name}"> in ${page}`);
   html = html.replace(re, `$1${name}?v=${hash}$3`);
 }
+
+// The worker is not copied from lib/, it is written straight into docs/, but it
+// is fetched by URL like any script and so caches just as hard. Stamp it too.
+{
+  const name = 'ai-worker.js';
+  const hash = crypto.createHash('sha256').update(fs.readFileSync('docs/' + name)).digest('hex').slice(0, 10);
+  const re = new RegExp(`(const AI_WORKER = ')${name}(\\?v=[0-9a-f]+)?(')`);
+  if (!re.test(html)) throw new Error(`no AI_WORKER reference in ${page}`);
+  html = html.replace(re, `$1${name}?v=${hash}$3`);
+  console.log(`docs/${name}  (${hash})`);
+}
 fs.writeFileSync(page, html);
 console.log(`${page} stamped`);
