@@ -14,7 +14,7 @@
 const S = 1000;   // clipper works in integers; 1 unit = 1 micron
 
 const DEFAULTS = {
-  size: 80, tall: 0, wide: 0,          // scale: pick one
+  size: 80, tall: 0, wide: 0,          // scale: pick one, or set tall+wide to stretch freely
   height: 14.5, blade: 1.0,            // blade wall
   base: 3.0, baseh: 2.5,               // foot flange, measured out from the blade face
   edge: 2.0, tip: 0.4,                 // tapered cutting edge
@@ -268,14 +268,18 @@ function buildShape(loops, opt) {
     if (p[1] > maxY) maxY = p[1];
   }
   const bw = maxX - minX, bh = maxY - minY;
-  const k = o.tall ? o.tall / bh : o.wide ? o.wide / bw : o.size / Math.max(bw, bh);
+  // Height and width together mean a deliberate stretch: honour both axes even
+  // though the figure comes out distorted. Otherwise one number drives both.
+  const free = o.tall > 0 && o.wide > 0;
+  const kx = free ? o.wide / bw : o.tall ? o.tall / bh : o.wide ? o.wide / bw : o.size / Math.max(bw, bh);
+  const ky = free ? o.tall / bh : kx;
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
   // Pixel rows run downward; flip so the model sits the right way up.
-  cs = cs.map(c => c.map(p => [(p[0] - cx) * k, (cy - p[1]) * k]));
+  cs = cs.map(c => c.map(p => [(p[0] - cx) * kx, (cy - p[1]) * ky]));
   // Thin the pixel staircase to within half a pixel. Everything downstream
   // (four offset passes for the rounding) is superlinear in point count, and
   // half a pixel is far below anything the nozzle resolves.
-  cs = cs.map(c => simplify(c, k * 0.5));
+  cs = cs.map(c => simplify(c, Math.min(kx, ky) * 0.5));
 
   let shape = union(toClip(cs)).filter(p => ClipperLib.Clipper.Orientation(p));
   if (!shape.length) throw new Error('the outline came out empty');
@@ -314,10 +318,11 @@ function buildShape(loops, opt) {
     if (p.Y > fy1) fy1 = p.Y;
   }
   let fw = (fx1 - fx0) / S, fh = (fy1 - fy0) / S;
-  const want = o.tall ? o.tall / fh : o.wide ? o.wide / fw : o.size / Math.max(fw, fh);
-  if (Math.abs(want - 1) > 1e-6) {
-    for (const r of shape) for (const p of r) { p.X = Math.round(p.X * want); p.Y = Math.round(p.Y * want); }
-    fw *= want; fh *= want;
+  const wantX = free ? o.wide / fw : o.tall ? o.tall / fh : o.wide ? o.wide / fw : o.size / Math.max(fw, fh);
+  const wantY = free ? o.tall / fh : wantX;
+  if (Math.abs(wantX - 1) > 1e-6 || Math.abs(wantY - 1) > 1e-6) {
+    for (const r of shape) for (const p of r) { p.X = Math.round(p.X * wantX); p.Y = Math.round(p.Y * wantY); }
+    fw *= wantX; fh *= wantY;
   }
   return { shape, size: { w: fw, h: fh } };
 }

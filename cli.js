@@ -26,6 +26,7 @@ function parseArgs(argv) {
   --size   N   largest dimension in mm      (default ${core.DEFAULTS.size})
   --tall   N   figure height in mm          (overrides --size)
   --wide   N   figure width in mm           (overrides --size)
+               giving both stretches the figure to that exact box
   --height N   total blade height in mm     (default ${core.DEFAULTS.height})
   --blade  N   blade wall thickness in mm   (default ${core.DEFAULTS.blade})
   --base   N   flange reach past the blade  (default ${core.DEFAULTS.base})

@@ -57,12 +57,15 @@
   .panel { padding: 18px; }
   label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
-  input[type=number] {
+  input[type=number], input[type=text] {
     flex: 1; min-width: 0; padding: 9px 11px; font: inherit; color: var(--ink);
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
   }
-  input[type=number]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  .unit { color: var(--muted); font-size: 14px; }
+  input[type=number]:focus, input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .unit { color: var(--muted); font-size: 14px; white-space: nowrap; }
+  #two { display: none; }
+  .free #one { display: none; }
+  .free #two { display: block; }
   .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
   .seg button {
     flex: 1; padding: 8px 4px; font: inherit; font-size: 13px; cursor: pointer;
@@ -116,15 +119,32 @@
     </div>
 
     <div class="card panel">
-      <label for="size">Tamanho do biscoito</label>
+      <label for="name">Nome do arquivo</label>
       <div class="row">
-        <input type="number" id="size" value="70" min="20" max="250" step="1">
-        <span class="unit">mm</span>
+        <input type="text" id="name" placeholder="cortador">
+        <span class="unit">.stl</span>
       </div>
+
+      <label for="size">Tamanho do biscoito</label>
       <div class="seg" id="fit">
         <button type="button" data-fit="tall" aria-pressed="true">Altura</button>
         <button type="button" data-fit="wide" aria-pressed="false">Largura</button>
         <button type="button" data-fit="size" aria-pressed="false">Maior lado</button>
+        <button type="button" data-fit="free" aria-pressed="false">Livre</button>
+      </div>
+      <div class="row" id="one">
+        <input type="number" id="size" value="7" min="2" max="25" step="0.5">
+        <span class="unit">cm</span>
+      </div>
+      <div id="two">
+        <div class="row">
+          <input type="number" id="tall" value="7" min="2" max="25" step="0.5">
+          <span class="unit">cm de altura</span>
+        </div>
+        <div class="row">
+          <input type="number" id="wide" value="7" min="2" max="25" step="0.5">
+          <span class="unit">cm de largura</span>
+        </div>
       </div>
       <button id="go">Baixar STL</button>
       <div id="msg"></div>
@@ -139,13 +159,13 @@
 </div>
 
 <script src="clipper.js?v=a650c69466"></script>
-<script src="core.js?v=de90b17b64"></script>
+<script src="core.js?v=2593c6b3ca"></script>
 <script>
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
   const MAX_SIDE = 1400;          // bigger scans only cost time; the nozzle cannot use the detail
-  let pixels = null, name = 'cortador';
+  let pixels = null;
 
   // ---- loading -------------------------------------------------------------
   function show(text, kind) {
@@ -156,7 +176,9 @@
 
   function load(file) {
     if (!file || !file.type.startsWith('image/')) return show('Escolha um arquivo de imagem.', 'err');
-    name = file.name.replace(/\.[^.]+$/, '') || 'cortador';
+    // Prefill the download name from the drop, but leave it editable: a photo
+    // straight out of WhatsApp carries a name nobody wants on their STL.
+    $('name').value = file.name.replace(/\.[^.]+$/, '').slice(0, 60) || 'cortador';
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -223,18 +245,31 @@
   }
 
   // ---- generate ------------------------------------------------------------
-  /** Which dimension the millimetre value refers to. */
+  function fitMode() {
+    return document.querySelector('#fit button[aria-pressed="true"]').dataset.fit;
+  }
+
+  /** The boxes are in centimetres; the core works in millimetres. */
+  function mm(id) { return parseFloat($(id).value) * 10; }
+
+  /** Which dimension(s) the entered size refers to. 'free' drives both axes. */
   function sizeOpt() {
-    const fit = document.querySelector('#fit button[aria-pressed="true"]').dataset.fit;
-    const mm = parseFloat($('size').value);
+    const fit = fitMode();
+    if (fit === 'free') return { tall: mm('tall') || 70, wide: mm('wide') || 70, size: 0 };
     const opt = { tall: 0, wide: 0, size: 0 };
-    opt[fit] = mm > 0 ? mm : 70;
+    opt[fit] = mm('size') > 0 ? mm('size') : 70;
     return opt;
+  }
+
+  /** Every size box the current mode reads from. */
+  function sizeInputs() {
+    return fitMode() === 'free' ? [$('tall'), $('wide')] : [$('size')];
   }
 
   function generate() {
     if (!pixels) return;
-    if (!(parseFloat($('size').value) > 0)) return show('Informe um tamanho em milímetros.', 'err');
+    if (!sizeInputs().every(i => parseFloat(i.value) > 0))
+      return show('Informe um tamanho em centímetros.', 'err');
 
     show('Gerando...', 'busy');
     $('go').disabled = true;
@@ -246,13 +281,15 @@
         const blob = new Blob([r.stl], { type: 'model/stl' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = name + '.stl';
+        const stem = ($('name').value.trim() || 'cortador')
+          .replace(/\.stl$/i, '').replace(/[\\/:*?"<>|]/g, '-');
+        a.download = stem + '.stl';
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 
         const d = CutterCore.DEFAULTS;
         $('specs').innerHTML = [
-          ['Biscoito', r.size.w.toFixed(1) + ' x ' + r.size.h.toFixed(1) + ' mm'],
+          ['Biscoito', (r.size.w / 10).toFixed(1) + ' x ' + (r.size.h / 10).toFixed(1) + ' cm'],
           ['Espaço na mesa', (r.size.w + (d.blade + d.base * 2)).toFixed(1) + ' x ' +
                              (r.size.h + (d.blade + d.base * 2)).toFixed(1) + ' mm'],
           ['Lâmina', d.blade + ' mm, ' + d.height + ' mm de altura'],
@@ -286,11 +323,17 @@
     const b = e.target.closest('button');
     if (!b) return;
     for (const x of $('fit').children) x.setAttribute('aria-pressed', String(x === b));
+    // Carry the single value across so Livre opens on what was already on screen
+    // instead of snapping back to the default.
+    if (b.dataset.fit === 'free' && parseFloat($('size').value) > 0) {
+      $('tall').value = $('wide').value = $('size').value;
+    }
+    document.querySelector('.panel').classList.toggle('free', b.dataset.fit === 'free');
     $('specs').innerHTML = '';
     preview();
   });
   let pending = 0;
-  $('size').addEventListener('input', () => {
+  for (const id of ['size', 'tall', 'wide']) $(id).addEventListener('input', () => {
     $('specs').innerHTML = '';       // they describe the last download, not this size
     clearTimeout(pending);
     pending = setTimeout(preview, 250);
