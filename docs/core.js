@@ -15,8 +15,8 @@ const S = 1000;   // clipper works in integers; 1 unit = 1 micron
 
 const DEFAULTS = {
   size: 80, tall: 0, wide: 0,          // scale: pick one, or set tall+wide to stretch freely
-  height: 14.5, blade: 1.0,            // blade wall
-  base: 3.0, baseh: 2.5,               // foot flange, measured out from the blade face
+  height: 20.0, blade: 1.0,            // blade wall, floor to cutting edge
+  base: 3.0, baseh: 5.0,               // foot flange, measured out from the blade face
   edge: 2.0, tip: 0.4,                 // tapered cutting edge
   threshold: 128, saturation: 40,      // ink = darker than this, or more coloured
   seal: 2, crop: true,

@@ -21,13 +21,15 @@ account.
 
 ## Geometry
 
-Measured off a commercial cutter and matched to it:
+Measured off a commercial cutter and matched to it, then raised on request:
+the cutter stands 20 mm floor to cutting edge, of which the flange is 5 mm, so
+there is 15 mm of blade above it to grip.
 
 | | |
 |---|---|
-| Blade | 1.0 mm thick, 14.5 mm tall |
+| Blade | 1.0 mm thick, 20.0 mm tall |
 | Cutting edge | top 2.0 mm taper down to 0.4 mm |
-| Foot flange | 3.0 mm reach, 2.5 mm tall |
+| Foot flange | 3.0 mm reach, 5.0 mm tall |
 
 Only the **outer** face of the blade slopes in. The inner face is what shapes
 the cookie, so it stays dead vertical for the full height and the cookie comes
